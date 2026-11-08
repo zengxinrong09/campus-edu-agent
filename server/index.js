@@ -32,8 +32,18 @@ const config = {
   // Qwen3 默认开启思考模式（enable_thinking=true）。思考模式下：
   // 1) 非流式请求容易只返回思考链、正文为空；2) 与 function calling 配合不稳定且明显变慢。
   // 因此默认关闭思考模式，需要思考链时可设 SILICONFLOW_ENABLE_THINKING=1。
-  enableThinking: process.env.SILICONFLOW_ENABLE_THINKING === '1'
+  enableThinking: process.env.SILICONFLOW_ENABLE_THINKING === '1',
+  // 主模型触发 TPM 限流时自动降级用的备用模型（免费额度更宽松），设空可关闭降级
+  fallbackModel: process.env.SILICONFLOW_FALLBACK_MODEL === 'off'
+    ? ''
+    : process.env.SILICONFLOW_FALLBACK_MODEL || 'Qwen/Qwen2.5-7B-Instruct'
 };
+
+// 只有 Qwen3 系列支持 enable_thinking 参数，其它模型传了可能被上游拒掉
+function thinkingParams(model = config.model) {
+  if (!/qwen3/i.test(model)) return {};
+  return { enable_thinking: config.enableThinking };
+}
 
 // 课程问答助手的系统提示词
 const SYSTEM_PROMPT = [
@@ -49,6 +59,11 @@ const SYSTEM_PROMPT = [
   '3. 【纪律】：',
   '   - 回答必须简洁、准确，绝不能编造数据。如果工具返回没课，就回答没课。'
 ].join('\n');
+
+// 小模型（如降级后的 Qwen2.5-7B）容易“凭日期推断没课”而不查表，运行期追加一条纪律提醒
+const TOOL_DISCIPLINE_REMINDER =
+  '【工具调用纪律（最高优先级）】凡是要给出课程名称、授课老师、教室或上课时间的答案，必须先调用 query_courses 查询真实课表，再根据返回结果作答。' +
+  '即使系统时间显示今天是周末、或看起来已经下课，也不能直接推断“今天没课”，必须先查询当天课表。';
 
 const WEEKDAY_LABELS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 const WEEKDAY_SHORT = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -101,6 +116,16 @@ function getErrorPayload(error, fallbackMessage) {
   };
 }
 
+// 硅基流动免费模型（如 Qwen/Qwen3-8B）有较低的 TPM 限额：一轮对话会连续发起
+// 「工具决策请求 + 流式回答请求」多次调用，很容易撞上 TPM。这里对 429/503 做退避重试。
+const RETRY_DELAYS_MS = [1500, 3500];
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 async function llmFetch(endpoint, body, stream = false) {
   if (!config.apiKey) {
     throw createAppError(
@@ -111,33 +136,59 @@ async function llmFetch(endpoint, body, stream = false) {
     );
   }
 
-  let response;
-  try {
-    response = await fetch(`${config.baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`
-      },
-      body: JSON.stringify(body)
-    });
-  } catch {
-    throw createAppError(
-      'NETWORK_UNREACHABLE',
-      '无法连接到 SiliconFlow 服务',
-      '当前运行环境访问 api.siliconflow.cn 失败。请检查网络、代理、VPN 或防火墙设置。',
-      502
-    );
-  }
+  let lastError = null;
 
-  if (!response.ok) {
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(`${config.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify(body)
+      });
+    } catch {
+      throw createAppError(
+        'NETWORK_UNREACHABLE',
+        '无法连接到 SiliconFlow 服务',
+        '当前运行环境访问 api.siliconflow.cn 失败。请检查网络、代理、VPN 或防火墙设置。',
+        502
+      );
+    }
+
+    if (response.ok) {
+      return stream ? response : response.json();
+    }
+
     const text = await response.text().catch(() => '');
+
     if (response.status === 401) {
       throw createAppError('INVALID_API_KEY', 'SiliconFlow API Key 无效或已过期', text || '请检查 `SILICONFLOW_API_KEY` 是否正确。', 401);
     }
 
     if (response.status === 403) {
       throw createAppError('PERMISSION_DENIED', 'SiliconFlow 拒绝访问该模型', text || '请确认账号已开通该模型（如 Qwen/Qwen3-8B）的调用权限。', 403);
+    }
+
+    // 429 / 503 以及 TPM（code 50602）属于可恢复的限流，退避后重试
+    const retryable = response.status === 429 || response.status === 503 || text.includes('50602');
+    if (retryable) {
+      lastError = text;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        const delay = RETRY_DELAYS_MS[attempt];
+        console.warn(`[rate-limit] ${response.status} 等待 ${delay}ms 后重试（第 ${attempt + 1} 次）`);
+        await wait(delay);
+        continue;
+      }
+
+      throw createAppError(
+        'RATE_LIMITED',
+        'SiliconFlow 请求过于频繁（TPM 限额）',
+        `${text || 'SiliconFlow 返回限流'}｜免费模型 Qwen/Qwen3-8B 的每分钟 token 额度较低，稍等 30~60 秒再问一次，或在控制台提额/换用额度更高的模型。`,
+        429
+      );
     }
 
     if (response.status === 429) {
@@ -147,15 +198,39 @@ async function llmFetch(endpoint, body, stream = false) {
     throw createAppError('LLM_HTTP_ERROR', `SiliconFlow 请求失败（${response.status}）`, text || '上游模型服务返回异常响应。', 502);
   }
 
-  if (stream) {
-    return response;
-  }
-
-  return response.json();
+  throw createAppError('RATE_LIMITED', 'SiliconFlow 请求过于频繁', lastError || '请稍后重试。', 429);
 }
 
-function sendSse(res, event, data) {
-  res.write(`event: ${event}\n`);
+// 主模型被限流后的冷却期：冷却期内直接走备用模型，避免每轮都白等重试
+let primaryBlockedUntil = 0;
+const PRIMARY_COOLDOWN_MS = 60 * 1000;
+
+async function chatFetch(body, stream = false) {
+  const primaryBlocked = Date.now() < primaryBlockedUntil;
+
+  if (!primaryBlocked) {
+    try {
+      const result = await llmFetch('/chat/completions', body, stream);
+      primaryBlockedUntil = 0;
+      return result;
+    } catch (error) {
+      if (error?.code !== 'RATE_LIMITED' || !config.fallbackModel) {
+        throw error;
+      }
+      primaryBlockedUntil = Date.now() + PRIMARY_COOLDOWN_MS;
+      console.warn(`[fallback] ${config.model} 触发限流，本轮改用 ${config.fallbackModel}`);
+    }
+  }
+
+  if (!config.fallbackModel) {
+    throw createAppError('RATE_LIMITED', 'SiliconFlow 请求过于频繁', '请稍后重试。', 429);
+  }
+
+  const { enable_thinking: _ignored, ...rest } = body;
+  return llmFetch('/chat/completions', { ...rest, model: config.fallbackModel, ...thinkingParams(config.fallbackModel) }, stream);
+}
+
+function sendSse(res, event, data) {  res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
@@ -234,6 +309,14 @@ function contentToText(result) {
     .join('\n')
     .trim();
 }
+
+// 暴露给模型的工具白名单（知识库导入/删除等操作走 REST 接口，模型无需调用）
+const EXPOSED_TOOL_NAMES = new Set([
+  'query_courses',
+  'get_current_time',
+  'retrieve_knowledge',
+  'list_knowledge_documents'
+]);
 
 function buildToolDefinitions(tools) {
   return tools.map((tool) => ({
@@ -410,21 +493,26 @@ app.post('/api/chat/stream', async (req, res) => {
     const messages = [
       {
         role: 'system',
-        content: `${SYSTEM_PROMPT}\n\n${buildTimeContext()}`
+        content: `${SYSTEM_PROMPT}\n\n${buildTimeContext()}\n\n${TOOL_DISCIPLINE_REMINDER}`
       },
       ...incomingMessages
     ];
 
     const gatheredCitations = [];
     const gatheredTools = [];
-    const toolDefinitions = buildToolDefinitions(availableTools.tools || []);
+    const toolDefinitions = buildToolDefinitions(
+      // 只暴露当前场景用得到的工具：tool schema 会按调用次数计入输入 token，
+      // 免费模型 TPM 很小，工具越多越容易触发限流
+      (availableTools.tools || []).filter((tool) => EXPOSED_TOOL_NAMES.has(tool.name))
+    );
 
     for (let round = 0; round < 4; round += 1) {
-      const completion = await llmFetch('/chat/completions', {
+      const completion = await chatFetch({
         model: config.model,
         stream: false,
         temperature: 0.4,
-        enable_thinking: config.enableThinking,
+        max_tokens: 512,
+        ...thinkingParams(),
         messages,
         tools: toolDefinitions,
         tool_choice: 'auto'
@@ -432,6 +520,10 @@ app.post('/api/chat/stream', async (req, res) => {
 
       const choice = completion.choices?.[0]?.message;
       const toolCalls = choice?.tool_calls || [];
+
+      if (process.env.QWEN_DEBUG === '1') {
+        console.error('[usage] tool-round:', JSON.stringify(completion.usage || {}));
+      }
 
       if (!toolCalls.length) {
         // 注意：这里不要把本轮的完整回答再塞回 messages。
@@ -503,11 +595,12 @@ app.post('/api/chat/stream', async (req, res) => {
       }
     }
 
-    const streamResponse = await llmFetch('/chat/completions', {
+    const streamResponse = await chatFetch({
       model: config.model,
       stream: true,
       temperature: 0.4,
-      enable_thinking: config.enableThinking,
+      max_tokens: 1024,
+      ...thinkingParams(),
       messages
     }, true);
 
@@ -584,6 +677,7 @@ app.get('*', (_, res) => {
 app.listen(process.env.PORT || config.port, '0.0.0.0', () => {
   console.log(`Server running at http://127.0.0.1:${config.port}`);
   console.log(`[model] ${config.model} @ ${config.baseUrl} (thinking: ${config.enableThinking ? 'on' : 'off'})`);
+  console.log(`[fallback] ${config.fallbackModel || '(已关闭)'}`);
   console.log(
     config.apiKey
       ? `[api-key] SILICONFLOW_API_KEY 已加载（${config.apiKey.slice(0, 6)}***${config.apiKey.slice(-4)}）`

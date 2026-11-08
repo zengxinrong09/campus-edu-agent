@@ -139,6 +139,7 @@ cp .env.example .env.local
 | `SILICONFLOW_API_KEY` | 硅基流动 API Key（对话模型用） | - |
 | `SILICONFLOW_MODEL` | 对话模型名，可留空 | `Qwen/Qwen3-8B` |
 | `SILICONFLOW_ENABLE_THINKING` | 是否开启 Qwen3 思考模式（`1` 开启） | `0` |
+| `SILICONFLOW_FALLBACK_MODEL` | 主模型 TPM 限流时自动降级的备用模型（`off` 关闭） | `Qwen/Qwen2.5-7B-Instruct` |
 | `QWEN_API_KEY` | DashScope / Qwen API Key（知识库 Embedding 用） | - |
 | `QWEN_BASE_URL` | Embedding 兼容接口 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `QWEN_EMBEDDING_MODEL` | Embedding 模型名 | `text-embedding-v3` |
@@ -159,14 +160,33 @@ npm run dev
 
 ```bash
 npm run build
+npm run dev:server   # 生产模式：Express 直接托管 dist/，单端口访问
 ```
+
+## Deployment
+
+前后端在同一个进程里：`vite build` 产出 `dist/`，Express 用 `express.static` 托管，因此**只需要一个端口**。
+
+- 服务监听 `process.env.PORT || 8787`，并绑定 `0.0.0.0`（适配云托管 / 容器）
+- MCP 子进程通过 `process.execPath` + 相对路径启动，容器内可直接工作，无需额外安装
+- 已提供 `Dockerfile`（Node 20-alpine，构建前端后以 `node server/index.js` 启动，`EXPOSE 3000`）
+
+必填环境变量（云平台控制台里配置，不要提交到仓库）：
+
+| Key | Value |
+| --- | --- |
+| `SILICONFLOW_API_KEY` | 硅基流动 API Key |
+| `NODE_ENV` | `production` |
+| `PORT` | 平台注入，无需手填 |
+
+> 只把 Node 服务跑起来即可，不需要把前端单独部署到静态托管（否则需要额外处理 `/api` 跨域与 SSE）。
 
 ## How It Works
 
 ### Streaming Response Flow
 
 1. 前端向 `/api/chat/stream` 发起请求
-2. 服务端调用 SiliconFlow 对话接口（`Qwen/Qwen3-8B`）
+2. 服务端调用 SiliconFlow 对话接口（`Qwen/Qwen3-8B`，限流时自动降级到 `Qwen/Qwen2.5-7B-Instruct`）
 3. 前端持续读取 SSE 数据流并解析 token
 4. UI 实时拼接并渲染生成内容
 
@@ -194,6 +214,7 @@ npm run build
 - 当前知识库使用服务端内存存储，服务重启后数据会清空
 - 若无法访问 SiliconFlow 服务，请优先检查 `SILICONFLOW_API_KEY`、网络环境、代理与账户配额
 - 当前后端使用 OpenAI Compatible 格式接入 SiliconFlow 的对话接口；知识库 Embedding 仍走阿里云百炼
+- `Qwen/Qwen3-8B` 是免费模型，TPM（每分钟 token）额度很小：一轮对话需要「工具决策 + 流式回答」多次调用，容易撞上限流。服务端已做退避重试 + 自动降级到 `SILICONFLOW_FALLBACK_MODEL`，若想稳定用 Qwen3-8B，请在控制台提额或改用量额更高的模型
 
 ## Roadmap
 
