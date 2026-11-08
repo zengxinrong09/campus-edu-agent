@@ -581,7 +581,7 @@ app.get('*', (_, res) => {
   res.sendFile(path.resolve(__dirname, '../dist/index.html'));
 });
 
-app.listen(config.port, '127.0.0.1', () => {
+app.listen(process.env.PORT || config.port, '0.0.0.0', () => {
   console.log(`Server running at http://127.0.0.1:${config.port}`);
   console.log(`[model] ${config.model} @ ${config.baseUrl} (thinking: ${config.enableThinking ? 'on' : 'off'})`);
   console.log(
