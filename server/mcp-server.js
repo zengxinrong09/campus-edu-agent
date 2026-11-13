@@ -248,8 +248,8 @@ const DAY_ALIAS_MAP = {
 
 // 常规作息时间表（用于“下节课”推算的参考信息，随工具结果一并返回）
 const TIME_SLOTS = {
-  '1-2节': { start: '08:00', end: '09:40', startMinutes: 480 },
-  '3-4节': { start: '10:00', end: '11:40', startMinutes: 600 },
+  '1-2节': { start: '08:30', end: '10:10', startMinutes: 510 },
+  '3-4节': { start: '10:30', end: '12:10', startMinutes: 630 },
   '5-6节': { start: '14:00', end: '15:40', startMinutes: 840 },
   '7-8节': { start: '16:00', end: '17:40', startMinutes: 960 }
 };

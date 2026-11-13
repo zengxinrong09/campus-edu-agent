@@ -763,3 +763,58 @@ button:disabled {
     border-radius: 24px;
   }
 }
+
+/* ===== 手机端适配（<768px）：隐藏侧边栏，聊天区占满全屏 ===== */
+@media (max-width: 768px) {
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .app-layout {
+    grid-template-columns: 100%;
+  }
+
+  /* 侧边栏隐藏为抽屉，仅点击顶栏菜单按钮时滑出 */
+  .sidebar-shell {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(88vw, 340px);
+    transform: translateX(-102%);
+    transition: transform 0.24s ease;
+    box-shadow: 0 20px 50px rgba(60, 64, 67, 0.18);
+  }
+
+  .sidebar-shell.sidebar-open {
+    transform: translateX(0);
+  }
+
+  /* 聊天主区域占满整屏 */
+  .main-shell {
+    width: 100%;
+    padding: 10px 12px 14px;
+    gap: 10px;
+  }
+
+  .yuan-agent-page {
+    overflow-x: hidden;
+  }
+
+  /* 消息气泡占满可用宽度，避免被挤压 */
+  .conversation-shell,
+  .conversation-scroller {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .message-main,
+  .message-content,
+  .tool-panel,
+  .source-panel {
+    max-width: 100%;
+  }
+}

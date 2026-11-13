@@ -1,0 +1,6 @@
+{
+  "envId": "vocal-flea-d9gtv2fbv1651097d",
+  "cloudrun": {
+    "name": "campus-edu-agent"
+  }
+}
