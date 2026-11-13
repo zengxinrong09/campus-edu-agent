@@ -247,11 +247,15 @@ const DAY_ALIAS_MAP = {
 };
 
 // 常规作息时间表（用于“下节课”推算的参考信息，随工具结果一并返回）
+// 单节课作息：第1节 08:30-09:10，第2节 09:20-10:00，第3节 10:20-11:00，第4节 11:10-11:50，
+// 第5节 14:30-15:10，第6节 15:20-16:00，第7节 16:20-17:00，第8节 17:10-17:50，
+// 第9节 19:00-19:40，第10节 19:50-20:30（课程表按两节连排的大节记录）
 const TIME_SLOTS = {
-  '1-2节': { start: '08:30', end: '10:10', startMinutes: 510 },
-  '3-4节': { start: '10:30', end: '12:10', startMinutes: 630 },
-  '5-6节': { start: '14:00', end: '15:40', startMinutes: 840 },
-  '7-8节': { start: '16:00', end: '17:40', startMinutes: 960 }
+  '1-2节': { start: '08:30', end: '10:00', startMinutes: 510 },
+  '3-4节': { start: '10:20', end: '11:50', startMinutes: 620 },
+  '5-6节': { start: '14:30', end: '16:00', startMinutes: 870 },
+  '7-8节': { start: '16:20', end: '17:50', startMinutes: 980 },
+  '9-10节': { start: '19:00', end: '20:30', startMinutes: 1140 }
 };
 
 function normalizeText(input) {
