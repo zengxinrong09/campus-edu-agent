@@ -10,7 +10,7 @@
 
     <div class="topbar-right">
       <button class="topbar-icon" @click="$emit('menu')">≡</button>
-      <button class="topbar-chip" @click="$emit('toggle-rag')">
+      <button class="topbar-chip rag-chip" @click="$emit('toggle-rag')">
         {{ ragEnabled ? 'RAG On' : 'RAG Off' }}
       </button>
       <button class="topbar-chip" :disabled="disabled" @click="$emit('new-session')">新对话</button>
