@@ -313,10 +313,28 @@ function dayHit(value, query) {
   return current === target;
 }
 
+// 用户/模型常用“上午/下午/晚上”这类时段说法，需要映射到具体连排节次，
+// 否则 time 过滤会把当天的课全部筛空，导致误答“没课”。
+const TIME_PERIOD_GROUPS = [
+  { match: /上午|早上|清晨/, periods: ['1-2节', '3-4节'] },
+  { match: /中午/, periods: ['3-4节', '5-6节'] },
+  { match: /下午/, periods: ['5-6节', '7-8节'] },
+  { match: /晚上|晚间|夜间|夜/, periods: ['9-10节'] }
+];
+
+function periodGroupOf(target) {
+  const found = TIME_PERIOD_GROUPS.find((item) => item.match.test(target));
+  return found ? found.periods : null;
+}
+
 function timeHit(value, query) {
   const target = normalizeTime(query);
   const current = normalizeTime(value);
   if (!target || !current) return false;
+
+  const group = periodGroupOf(target);
+  if (group) return group.includes(current);
+
   return current === target || current.includes(target) || target.includes(current);
 }
 

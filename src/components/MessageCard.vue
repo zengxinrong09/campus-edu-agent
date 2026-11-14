@@ -15,14 +15,7 @@
           <strong>工具调用</strong>
           <span>{{ message.tools.length }} 次</span>
         </div>
-        <article v-for="tool in message.tools" :key="tool.id" class="tool-card">
-          <div class="tool-topline">
-            <strong>{{ tool.name }}</strong>
-            <span :class="['tool-status', `tool-${tool.status}`]">{{ tool.status }}</span>
-          </div>
-          <pre>{{ JSON.stringify(tool.args, null, 2) }}</pre>
-          <p v-if="tool.result">{{ tool.result }}</p>
-        </article>
+        <CourseResultCard v-for="tool in message.tools" :key="tool.id" :tool="tool" />
       </section>
 
       <section v-if="message.citations?.length" class="source-panel">
@@ -46,6 +39,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { renderMarkdown } from '@/services/markdown';
+import CourseResultCard from '@/components/CourseResultCard.vue';
 import type { ChatMessage } from '@/types/chat';
 
 const props = defineProps<{

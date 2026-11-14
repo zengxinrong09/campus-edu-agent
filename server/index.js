@@ -50,20 +50,35 @@ const SYSTEM_PROMPT = [
   '你是一个灵活的高校教务智能助手，当前服务对象为25级。你的职责是基于真实课表数据解答问题。请严格按照以下逻辑执行：',
   '1. 【身份识别】：',
   '   - 如果用户是【辅导员】（问题中带有班级，如“25级软件3班”），直接提取班级信息并调用工具查询。',
-  '   - 如果用户是【学生】（用“我”、“我的”提问，且未提班级），你必须先反问：“请问你是25级软件3班还是软件技术4班的同学呢？”等待用户回答后，利用上下文记忆，再调用工具。',
-  '2. 【下节课推算】：',
-  '   - 如果用户问“下节课在哪上”或“今天还有什么课”。',
-  '   - 首先，看系统时间里的“星期几”。调用工具查询该班级“今天”的所有课程。',
-  '   - 其次，根据系统时间里的“钟点”（结合学校作息时间表：1-2节 08:30-10:00，3-4节 10:20-11:50，5-6节 14:30-16:00，7-8节 16:20-17:50，9-10节 19:00-20:30），推算出当前时间之后的“下一节课”。',
-  '   - 最后，告诉学生下一节课的课程名称、教室和时间。如果今天的课已经全部结束，则回答“今天没课了”。',
-  '3. 【纪律】：',
-  '   - 回答必须简洁、准确，绝不能编造数据。如果工具返回没课，就回答没课。'
+  '   - 如果用户是【学生】（用“我”、“我的”提问，且问题里完全没有出现任何班级名称），你必须先反问：“请问你是25级软件3班还是软件技术4班的同学呢？”等待用户回答后，利用上下文记忆，再调用工具。',
+  '   - 只要问题里已经出现班级名称（如“25级软件3班”“软件技术4班”），就视为已明确身份，必须直接调用工具查询，禁止再反问。',
+  '2. 【学校作息时间表】（唯一权威版本，禁止使用任何其他版本、禁止凭经验估算）：',
+  '   第1节 08:30-09:10；第2节 09:20-10:00；第3节 10:20-11:00；第4节 11:10-11:50；',
+  '   第5节 14:30-15:10；第6节 15:20-16:00；第7节 16:20-17:00；第8节 17:10-17:50；',
+  '   第9节 19:00-19:40；第10节 19:50-20:30。',
+  '   课表里的 time 字段是“两节连排”写法，对应关系为：1-2节 08:30-10:00；3-4节 10:20-11:50；5-6节 14:30-16:00；7-8节 16:20-17:50；9-10节 19:00-20:30。',
+  '   回答任何时间都必须能在这张表里对上，绝不允许自行改写、四舍五入或推算别的时间。',
+  '3. 【下节课推算】（仅用于用户没有提到具体星期几的情况）：',
+  '   - 用户问“下节课在哪上”“今天还有什么课”时：先读系统时间里的“星期几”，调用工具查询该班级“今天”的全部课程；',
+  '   - 再对照上面的作息时间表，找出“当前时间之后最近的一节”还没结束的课；',
+  '   - 回答它的课程名称、教室和起止时间；如果今天的课已经全部结束，回答“今天没课了”。',
+  '4. 【工具调用：日期必须锁定】（最高优先级，违反即算答错）：',
+  '   - 当用户询问某一天（如“周五”“明天”“后天”“星期六”）的课程时，调用 query_courses 必须把 day 参数严格设置为用户询问的那一天：用户问周五，day 必须传「周五」，绝不能传「周六」，也不能传今天的星期，更不能省略 day 去查全表。',
+  '   - 用户问题里明确出现的星期或相对日期（今天/明天/后天）优先级最高，高于系统当前时间；系统当前时间只用来推算用户没有提到的日期。',
+  '   - 用户说“明天/后天”时，先用系统当前星期换算出对应星期（如今天是周五，则明天是周六、后天是周日），再把换算结果的星期传给 day。',
+  '   - 一次回答只回答用户问到的那一天，禁止把其他日期的课程混进答案，禁止在问周五时顺带输出周六、周日的课程。',
+  '   - 查“某天有哪些课/下节课/今天还有什么课”时，query_courses 只传 className 和 day 两个参数，绝对不要传 time 参数（传了会把当天的课筛空，从而误答“没课”）。只有当用户明确说到具体节次（如“3-4节”“第5节”）或半天（如“下午”）时，才允许传 time。',
+  '5. 【纪律】：',
+  '   - 回答必须简洁、准确，绝不能编造数据。如果工具返回没课，就回答没课。',
+  '   - 严禁把工具的 JSON 原始返回贴给用户，要用自然语言说清课程名、时间、教室、老师。'
 ].join('\n');
 
 // 小模型（如降级后的 Qwen2.5-7B）容易“凭日期推断没课”而不查表，运行期追加一条纪律提醒
 const TOOL_DISCIPLINE_REMINDER =
   '【工具调用纪律（最高优先级）】凡是要给出课程名称、授课老师、教室或上课时间的答案，必须先调用 query_courses 查询真实课表，再根据返回结果作答。' +
-  '即使系统时间显示今天是周末、或看起来已经下课，也不能直接推断“今天没课”，必须先查询当天课表。';
+  '即使系统时间显示今天是周末、或看起来已经下课，也不能直接推断“今天没课”，必须先查询当天课表。' +
+  '【日期锁定】用户问到哪一天，query_courses 的 day 参数就必须是哪一天（问周五就传「周五」，问明天就传明天的星期），' +
+  '绝不允许改查其他星期，也不允许传 listAll 把整张表捞回来。';
 
 const WEEKDAY_LABELS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 const WEEKDAY_SHORT = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -88,6 +103,118 @@ function resolveNow() {
 function buildTimeContext(date = resolveNow()) {
   const label = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${WEEKDAY_LABELS[date.getDay()]} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
   return `【当前时间：${label}】\n【今日星期标识：${WEEKDAY_SHORT[date.getDay()]}（课表 day 字段使用「周一」~「周日」格式）】`;
+}
+
+// 与 Date#getDay() 下标对齐的汉字（0=周日）
+const DAY_CHARS = ['日', '一', '二', '三', '四', '五', '六'];
+
+// 用户是否点到了具体节次（“第3节”“3-4节”）或半天（“下午”）
+const PERIOD_HINT_RE = /(?:第\s*)?[0-9一二三四五六七八九十]+\s*[-~至到]\s*[0-9一二三四五六七八九十]+\s*节|第\s*[0-9一二三四五六七八九十]+\s*节/;
+
+const HALF_DAY_RULES = [
+  { match: /上午|早上|清晨/, value: '上午' },
+  { match: /中午/, value: '中午' },
+  { match: /下午/, value: '下午' },
+  { match: /晚上|晚间|夜间/, value: '晚上' }
+];
+
+function halfDayOf(text) {
+  const source = String(text || '');
+  const found = HALF_DAY_RULES.find((item) => item.match.test(source));
+  return found ? found.value : null;
+}
+
+// 从用户原话里识别“明确指定的那一天”。
+// 提示词只能降低概率，模型仍会偶发把「周五」查成「周六」，所以服务端再做一层硬纠正。
+function detectExplicitDay(text) {
+  const src = String(text || '');
+  if (!src) return null;
+
+  // 1) 显式星期写法：周五 / 星期五 / 礼拜五 / 周天
+  for (let index = 0; index < DAY_CHARS.length; index += 1) {
+    const alt = index === 0 ? '[日天]' : DAY_CHARS[index];
+    if (new RegExp(`(?:周|星期|礼拜)\\s*${alt}`).test(src)) {
+      return WEEKDAY_SHORT[index];
+    }
+  }
+
+  // 2) 相对日期：后天 → 明天 → 今天（按偏移量从大到小匹配，避免「后天」被「天」误判）
+  const now = resolveNow();
+  const relatives = [
+    { pattern: /后天/, offset: 2 },
+    { pattern: /明天|明日/, offset: 1 },
+    { pattern: /今天|今日/, offset: 0 }
+  ];
+  for (const { pattern, offset } of relatives) {
+    if (pattern.test(src)) {
+      return WEEKDAY_SHORT[(now.getDay() + offset) % 7];
+    }
+  }
+
+  return null;
+}
+
+// 把工具调用里的 day 参数强制锁定为用户问到的那一天，并清掉会误筛空结果的参数
+function applyDayLock(toolCall, lockedDay, userText = '') {
+  if (toolCall?.function?.name !== 'query_courses') return toolCall;
+
+  let args;
+  try {
+    args = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    return toolCall;
+  }
+
+  const nextArgs = { ...args };
+  const changes = [];
+
+  // 1) 日期锁定
+  if (lockedDay && nextArgs.day !== lockedDay) {
+    changes.push(`day ${args.day ?? '(空)'} → ${lockedDay}`);
+    nextArgs.day = lockedDay;
+  }
+
+  // 2) 禁止全表扫描
+  if (nextArgs.listAll) {
+    delete nextArgs.listAll;
+    changes.push('移除 listAll');
+  }
+
+  // 3) keyword 里带日期会绕过 day 过滤，直接丢掉
+  if (typeof nextArgs.keyword === 'string' && /周|星期|礼拜|今天|明天|后天/.test(nextArgs.keyword)) {
+    delete nextArgs.keyword;
+    changes.push('移除含日期的 keyword');
+  }
+
+  // 4) 用户没指定具体节次时，模型自己脑补的 time 过滤会把当天课程筛空
+  //    （典型翻车：问“下节课在哪上”，模型传 time=1-2节；问“下午有什么课”，模型传 time=1-2节）
+  const text = String(userText || '');
+  const hasSlot = PERIOD_HINT_RE.test(text);
+  const halfDay = halfDayOf(text);
+
+  if (hasSlot) {
+    // 用户点到了具体节次，time 由模型决定
+  } else if (halfDay) {
+    if (nextArgs.time !== halfDay) {
+      changes.push(`time ${nextArgs.time ?? '(空)'} → ${halfDay}`);
+      nextArgs.time = halfDay;
+    }
+  } else if (nextArgs.time) {
+    changes.push(`移除 time=${nextArgs.time}`);
+    delete nextArgs.time;
+  }
+
+  if (!changes.length) return toolCall;
+
+  console.warn(`[query-guard] 纠正工具参数：${changes.join('；')}`);
+
+  return {
+    ...toolCall,
+    function: {
+      ...toolCall.function,
+      arguments: JSON.stringify(nextArgs)
+    }
+  };
 }
 
 function createAppError(code, message, details = '', status = 500) {
@@ -490,6 +617,8 @@ app.post('/api/chat/stream', async (req, res) => {
     const session = await createMcpSession();
     const availableTools = await session.client.listTools();
     const incomingMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const lastUserText = [...incomingMessages].reverse().find((item) => item?.role === 'user')?.content || '';
+    const lockedDay = detectExplicitDay(lastUserText);
     const messages = [
       {
         role: 'system',
@@ -534,7 +663,9 @@ app.post('/api/chat/stream', async (req, res) => {
 
       // 关键：一条 assistant 消息里带多个 tool_calls 时，部分 Qwen 兼容网关会丢失工具结果，
       // 模型随后会凭空编造数据。因此这里把每个工具调用拆成独立的「assistant + tool」消息对。
-      for (const toolCall of toolCalls) {
+      for (const rawToolCall of toolCalls) {
+        // 日期锁定：用户明确说了周五，就只允许查周五，避免“问周五答周六”的幻觉
+        const toolCall = applyDayLock(rawToolCall, lockedDay, lastUserText);
         let previewArgs = {};
         try {
           previewArgs = toolCall.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};

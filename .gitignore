@@ -15,3 +15,6 @@ dist-ssr
 .idea
 .DS_Store
 *.log
+
+# local UI screenshots
+ui-*.png
